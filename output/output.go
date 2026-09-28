@@ -43,23 +43,23 @@ func (l *Logger) Level() Level {
 // Debug prints diagnostic output (only in verbose mode)
 func (l *Logger) Debug(format string, args ...interface{}) {
 	if l.level >= LevelVerbose {
-		fmt.Fprintf(l.out, format, args...)
+		_, _ = fmt.Fprintf(l.out, format, args...)
 	}
 }
 
 // Info prints standard progress information (normal and verbose modes)
 func (l *Logger) Info(format string, args ...interface{}) {
 	if l.level >= LevelNormal {
-		fmt.Fprintf(l.out, format, args...)
+		_, _ = fmt.Fprintf(l.out, format, args...)
 	}
 }
 
 // Result prints output that is always shown regardless of level
 func (l *Logger) Result(format string, args ...interface{}) {
-	fmt.Fprintf(l.out, format, args...)
+	_, _ = fmt.Fprintf(l.out, format, args...)
 }
 
 // Error prints error messages to stderr (always shown)
 func (l *Logger) Error(format string, args ...interface{}) {
-	fmt.Fprintf(l.errOut, format, args...)
+	_, _ = fmt.Fprintf(l.errOut, format, args...)
 }

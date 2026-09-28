@@ -3,41 +3,39 @@
 package mtu
 
 import (
+	"errors"
+	"net"
 	"syscall"
-
-	"golang.org/x/net/ipv4"
 )
 
 const (
-	// IP_DONTFRAGMENT is the Windows socket option for Don't Fragment
+	// IP_DONTFRAGMENT is the Windows socket option for Don't Fragment (ws2ipdef.h)
 	IP_DONTFRAGMENT = 14
+	// IPV6_DONTFRAG is the Windows socket option to disable IPv6 fragmentation (ws2ipdef.h)
+	IPV6_DONTFRAG = 14
 )
 
-// setDontFragmentIPv4 sets the Don't Fragment bit on Windows
-func setDontFragmentIPv4(p *ipv4.PacketConn) error {
-	conn := p.PacketConn
-
-	// Get syscall.RawConn from the underlying connection
-	type rawConner interface {
-		SyscallConn() (syscall.RawConn, error)
+// setDontFragment disables fragmentation on Windows
+func setDontFragment(conn net.PacketConn, isIPv6 bool) error {
+	level, opt := syscall.IPPROTO_IP, IP_DONTFRAGMENT
+	if isIPv6 {
+		level, opt = syscall.IPPROTO_IPV6, IPV6_DONTFRAG
 	}
 
-	rc, ok := conn.(rawConner)
+	sc, ok := conn.(syscall.Conn)
 	if !ok {
-		return nil // Can't get raw conn, silently skip
+		return errors.New("connection does not expose a socket handle")
 	}
-
-	rawConn, err := rc.SyscallConn()
+	rawConn, err := sc.SyscallConn()
 	if err != nil {
 		return err
 	}
 
-	var setsockoptErr error
-	controlErr := rawConn.Control(func(fd uintptr) {
-		setsockoptErr = syscall.SetsockoptInt(syscall.Handle(fd), syscall.IPPROTO_IP, IP_DONTFRAGMENT, 1)
-	})
-	if controlErr != nil {
-		return controlErr
+	var sockErr error
+	if err := rawConn.Control(func(fd uintptr) {
+		sockErr = syscall.SetsockoptInt(syscall.Handle(fd), level, opt, 1)
+	}); err != nil {
+		return err
 	}
-	return setsockoptErr
+	return sockErr
 }

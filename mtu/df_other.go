@@ -1,13 +1,14 @@
-//go:build !linux && !darwin && !windows
+//go:build !linux && !darwin && !freebsd && !windows
 
 package mtu
 
 import (
-	"golang.org/x/net/ipv4"
+	"errors"
+	"net"
 )
 
-// setDontFragmentIPv4 is a no-op on unsupported platforms
-func setDontFragmentIPv4(p *ipv4.PacketConn) error {
-	_ = p // silence unused warning
-	return nil
+// setDontFragment is not supported on this platform, so probes may be
+// fragmented and the discovered MTU may be too high.
+func setDontFragment(conn net.PacketConn, isIPv6 bool) error {
+	return errors.New("setting Don't Fragment is not supported on this platform")
 }

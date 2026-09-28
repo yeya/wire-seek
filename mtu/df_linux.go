@@ -3,43 +3,17 @@
 package mtu
 
 import (
-	"syscall"
+	"net"
 
-	"golang.org/x/net/ipv4"
+	"golang.org/x/sys/unix"
 )
 
-const (
-	// IP_MTU_DISCOVER is the Linux socket option for MTU discovery
-	IP_MTU_DISCOVER = 10
-	// IP_PMTUDISC_DO enables PMTU discovery and sets Don't Fragment bit
-	IP_PMTUDISC_DO = 2
-)
-
-// setDontFragmentIPv4 sets the Don't Fragment bit on Linux
-func setDontFragmentIPv4(p *ipv4.PacketConn) error {
-	conn := p.PacketConn
-
-	// Get syscall.RawConn from the underlying connection
-	type rawConner interface {
-		SyscallConn() (syscall.RawConn, error)
+// setDontFragment disables fragmentation on Linux. IP_PMTUDISC_DO sets the
+// DF bit on IPv4; IPV6_PMTUDISC_DO stops the kernel fragmenting locally on
+// IPv6 (routers never fragment IPv6).
+func setDontFragment(conn net.PacketConn, isIPv6 bool) error {
+	if isIPv6 {
+		return setsockoptInt(conn, unix.IPPROTO_IPV6, unix.IPV6_MTU_DISCOVER, unix.IPV6_PMTUDISC_DO)
 	}
-
-	rc, ok := conn.(rawConner)
-	if !ok {
-		return nil // Can't get raw conn, silently skip
-	}
-
-	rawConn, err := rc.SyscallConn()
-	if err != nil {
-		return err
-	}
-
-	var setsockoptErr error
-	controlErr := rawConn.Control(func(fd uintptr) {
-		setsockoptErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, IP_MTU_DISCOVER, IP_PMTUDISC_DO)
-	})
-	if controlErr != nil {
-		return controlErr
-	}
-	return setsockoptErr
+	return setsockoptInt(conn, unix.IPPROTO_IP, unix.IP_MTU_DISCOVER, unix.IP_PMTUDISC_DO)
 }

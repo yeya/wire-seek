@@ -14,9 +14,10 @@ If your WireGuard MTU is too high, packets get fragmented (slow). If it's too lo
 
 ## How It Works
 
-1. **Path MTU Discovery** - Sends ICMP Echo packets with the Don't Fragment (DF) bit set
-2. **Binary Search** - Efficiently finds the optimal MTU in ~8 probes instead of 200+
-3. **WireGuard Calculation** - Subtracts the correct overhead for your tunnel:
+1. **Path MTU Discovery** - Sends ICMP Echo packets with fragmentation disabled (DF bit on IPv4, no local fragmentation on IPv6)
+2. **Binary Search** - Efficiently finds the optimal MTU in ~10 probes instead of 900+
+3. **Loss Tolerance** - Retries a size that gets no reply before treating it as too large, so a single dropped packet doesn't skew the result
+4. **WireGuard Calculation** - Subtracts the correct overhead for your tunnel:
    - IPv4: 60 bytes (20 IP + 8 UDP + 32 WireGuard)
    - IPv6: 80 bytes (40 IP + 8 UDP + 32 WireGuard)
 
@@ -66,7 +67,7 @@ go build -o wire-seek .
 ## Usage
 
 ```bash
-# Basic usage (requires root for raw ICMP sockets)
+# Basic usage (root is needed for raw ICMP sockets; see "Running without root")
 sudo wire-seek <target-host>
 
 # Examples
@@ -77,6 +78,8 @@ sudo wire-seek -6 2001:db8::1        # Force IPv6
 sudo wire-seek -q vpn.example.com    # Quiet mode (for scripting)
 sudo wire-seek -max-mtu 1420 10.0.0.1    # Limit to WireGuard-safe range
 sudo wire-seek -max-mtu 9000 10.0.0.1    # Jumbo frame network
+sudo wire-seek 10.0.0.1 -v               # Flags may also follow the host
+sudo wire-seek -timeout 1s -attempts 3 vpn.example.com  # Lossy/slow links
 
 # Testing through an existing tunnel (IMPORTANT: use --tunnel flag!)
 sudo wire-seek -tunnel 8.8.8.8       # Verify tunnel MTU is working
@@ -87,12 +90,25 @@ sudo wire-seek -tunnel 8.8.8.8       # Verify tunnel MTU is working
 | Flag | Description |
 |------|-------------|
 | `-target` | Target host or IP address |
-| `-6` | Use IPv6 instead of IPv4 |
+| `-6` | Use IPv6 (fails if the host has no IPv6 address) |
 | `-v` | Verbose output (shows binary search progress) |
 | `-q` | Quiet output (prints only the MTU value, for scripting) |
 | `-tunnel` | Testing through an existing tunnel (skips WireGuard overhead calculation) |
 | `-min-mtu` | Minimum MTU to test (default: 576 for IPv4, 1280 for IPv6) |
 | `-max-mtu` | Maximum MTU to test (default: 1500, increase for jumbo frames) |
+| `-timeout` | Time to wait for each echo reply (default: 2s) |
+| `-attempts` | Probes per MTU size before treating it as too large (default: 2) |
+
+Exit codes: `0` success, `1` resolution/discovery failure, `2` invalid usage.
+
+### Running without root
+
+If raw ICMP sockets are unavailable, Wire-Seek falls back to unprivileged ICMP
+sockets (Linux and macOS). On Linux, allow them for your group with:
+
+```bash
+sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
+```
 
 ### Example Output
 
@@ -101,10 +117,10 @@ Wire-Seek: WireGuard MTU Optimizer
 Target: 10.0.0.1 (10.0.0.1)
 Protocol: IPv4
 
-Discovering path MTU (range: 1280-1500)...
+Discovering path MTU (range: 576-1500)...
 
 Results:
-  Path MTU:      1500 bytes
+  Path MTU: 1500 bytes
   WireGuard MTU: 1440 bytes
 
 Add to your WireGuard config:
@@ -134,7 +150,7 @@ sudo wg-quick up wg0
 | Platform | Architecture | Status |
 |----------|--------------|--------|
 | Linux | amd64, arm64 | ✅ Full support |
-| macOS | amd64, arm64 | ✅ Full support |
+| macOS (11+) | amd64, arm64 | ✅ Full support |
 | FreeBSD | amd64 | ✅ Full support |
 | Windows | amd64 | ✅ Full support |
 

@@ -3,6 +3,7 @@ package mtu
 import (
 	"net"
 	"testing"
+	"time"
 
 	"github.com/yeya/wire-seek/output"
 )
@@ -37,7 +38,7 @@ func TestNewDiscoverer(t *testing.T) {
 			if tt.wantIPv6 {
 				minMTU = MinMTU_IPv6
 			}
-			d := NewDiscoverer(tt.target, log, minMTU, MaxMTU)
+			d := NewDiscoverer(tt.target, log, Options{MinMTU: minMTU, MaxMTU: MaxMTU})
 			if d.isIPv6 != tt.wantIPv6 {
 				t.Errorf("NewDiscoverer().isIPv6 = %v, want %v", d.isIPv6, tt.wantIPv6)
 			}
@@ -83,13 +84,7 @@ func TestPayloadSizeCalculation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var headerSize int
-			if tt.isIPv6 {
-				headerSize = IPv6HeaderSize
-			} else {
-				headerSize = IPv4HeaderSize
-			}
-			payload := tt.mtu - headerSize - ICMPHeaderSize
+			payload := payloadSize(tt.mtu, tt.isIPv6)
 			if payload != tt.expectedPayload {
 				t.Errorf("payload = %d, want %d", payload, tt.expectedPayload)
 			}
@@ -173,7 +168,7 @@ func TestNewDiscovererWithCustomMTU(t *testing.T) {
 	log := output.New(output.LevelQuiet)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := NewDiscoverer(tt.target, log, tt.minMTU, tt.maxMTU)
+			d := NewDiscoverer(tt.target, log, Options{MinMTU: tt.minMTU, MaxMTU: tt.maxMTU})
 			if d.minMTU != tt.wantMin {
 				t.Errorf("NewDiscoverer().minMTU = %d, want %d", d.minMTU, tt.wantMin)
 			}
@@ -181,5 +176,115 @@ func TestNewDiscovererWithCustomMTU(t *testing.T) {
 				t.Errorf("NewDiscoverer().maxMTU = %d, want %d", d.maxMTU, tt.wantMax)
 			}
 		})
+	}
+}
+
+func TestNewDiscovererDefaults(t *testing.T) {
+	d := NewDiscoverer(net.ParseIP("8.8.8.8"), output.New(output.LevelQuiet), Options{MinMTU: 576, MaxMTU: 1500})
+	if d.timeout != DefaultTimeout {
+		t.Errorf("timeout = %v, want %v", d.timeout, DefaultTimeout)
+	}
+	if d.attempts != DefaultAttempts {
+		t.Errorf("attempts = %d, want %d", d.attempts, DefaultAttempts)
+	}
+
+	d = NewDiscoverer(net.ParseIP("8.8.8.8"), output.New(output.LevelQuiet),
+		Options{MinMTU: 576, MaxMTU: 1500, Timeout: 500 * time.Millisecond, Attempts: 5})
+	if d.timeout != 500*time.Millisecond || d.attempts != 5 {
+		t.Errorf("custom options not applied: timeout=%v attempts=%d", d.timeout, d.attempts)
+	}
+}
+
+func TestSearch(t *testing.T) {
+	tests := []struct {
+		name    string
+		minMTU  int
+		maxMTU  int
+		pathMTU int // largest size the fake network accepts
+		want    int
+		wantErr bool
+	}{
+		{"full ethernet", 576, 1500, 1500, 1500, false},
+		{"PPPoE", 576, 1500, 1492, 1492, false},
+		{"odd value", 576, 1500, 1373, 1373, false},
+		{"exactly minimum", 576, 1500, 576, 576, false},
+		{"one above minimum", 576, 1500, 577, 577, false},
+		{"one below maximum", 576, 1500, 1499, 1499, false},
+		{"path above range is capped", 1280, 1420, 1500, 1420, false},
+		{"single-value range", 1400, 1400, 1500, 1400, false},
+		{"jumbo", 1500, 9000, 9000, 9000, false},
+		{"unreachable", 576, 1500, 500, 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := NewDiscoverer(net.ParseIP("192.0.2.1"), output.New(output.LevelQuiet),
+				Options{MinMTU: tt.minMTU, MaxMTU: tt.maxMTU})
+			probes := 0
+			d.probe = func(size int) bool {
+				probes++
+				if size < tt.minMTU || size > tt.maxMTU {
+					t.Errorf("probed size %d outside range %d-%d", size, tt.minMTU, tt.maxMTU)
+				}
+				return size <= tt.pathMTU
+			}
+
+			got, err := d.search()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("search() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("search() = %d, want %d", got, tt.want)
+			}
+			// 1 reachability probe + ceil(log2(range)) search probes
+			if limit := 2 + bitsLen(tt.maxMTU-tt.minMTU); probes > limit {
+				t.Errorf("search() used %d probes, want at most %d", probes, limit)
+			}
+		})
+	}
+}
+
+func bitsLen(n int) int {
+	b := 0
+	for ; n > 0; n >>= 1 {
+		b++
+	}
+	return b
+}
+
+func TestProbeOverhead(t *testing.T) {
+	if got := ProbeOverhead(false); got != 28 {
+		t.Errorf("ProbeOverhead(IPv4) = %d, want 28", got)
+	}
+	if got := ProbeOverhead(true); got != 48 {
+		t.Errorf("ProbeOverhead(IPv6) = %d, want 48", got)
+	}
+}
+
+func TestAddrIP(t *testing.T) {
+	ip := net.ParseIP("192.0.2.1")
+	if got := addrIP(&net.IPAddr{IP: ip}); !got.Equal(ip) {
+		t.Errorf("addrIP(IPAddr) = %v, want %v", got, ip)
+	}
+	if got := addrIP(&net.UDPAddr{IP: ip}); !got.Equal(ip) {
+		t.Errorf("addrIP(UDPAddr) = %v, want %v", got, ip)
+	}
+	if got := addrIP(&net.TCPAddr{IP: ip}); got != nil {
+		t.Errorf("addrIP(TCPAddr) = %v, want nil", got)
+	}
+}
+
+func TestStripIPv4Header(t *testing.T) {
+	icmpMsg := []byte{0, 0, 0, 0, 0, 1, 0, 1} // echo reply (type 0)
+	withHeader := append(append([]byte{0x45}, make([]byte, 19)...), icmpMsg...)
+
+	if got := stripIPv4Header(withHeader, true); string(got) != string(icmpMsg) {
+		t.Errorf("stripIPv4Header(with header) = %v, want %v", got, icmpMsg)
+	}
+	if got := stripIPv4Header(icmpMsg, true); string(got) != string(icmpMsg) {
+		t.Errorf("stripIPv4Header(bare ICMP) = %v, want unchanged", got)
+	}
+	if got := stripIPv4Header(withHeader, false); len(got) != len(withHeader) {
+		t.Errorf("stripIPv4Header(non-raw) modified the buffer")
 	}
 }
